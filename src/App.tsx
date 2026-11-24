@@ -101,6 +101,8 @@ export default function App() {
     activeEchoSpirit: null,
     bufferProximity: 0,
     inCorruption: false,
+    cloudStuckSeconds: 0,
+    pixelBlurIntensity: 0,
   });
 
   const pushRadio = useCallback(
@@ -223,16 +225,68 @@ export default function App() {
     return () => clearInterval(id);
   }, [snapshot?.mode, snapshot?.phase, paused, pushRadio]);
 
+  // Co-op Guide audio ambience sync (shares thriller + Buffer-approaching chase score)
+  useEffect(() => {
+    if (!snapshot || snapshot.mode !== 'coop' || role !== 'guide') return;
+    if (snapshot.phase === 'playing' || snapshot.phase === 'restoring') {
+      const corruptionLevel = Math.min(
+        1,
+        (1 - snapshot.remainingSeconds / 120) * 0.85 + (snapshot.remainingSeconds <= 0 ? 0.35 : 0)
+      );
+      audioEngine.updateAmbience({
+        inBuilding: snapshot.mina.inBuilding,
+        approachingBuilding: false,
+        bufferProximity: snapshot.buffer.intensity,
+        corruptionLevel,
+        restored: snapshot.restored,
+      });
+    } else if (snapshot.phase === 'ended') {
+      if (snapshot.restored) {
+        audioEngine.playVictoryMusic();
+      } else {
+        audioEngine.playFailureBlackout();
+      }
+    } else {
+      audioEngine.stopGameplayMusic();
+    }
+  }, [snapshot, role]);
+
+  // Home / Lobby screen soundtrack lifecycle
+  const isHomeScreen = !snapshot || snapshot.phase === 'lobby';
+  useEffect(() => {
+    if (!isHomeScreen) {
+      audioEngine.stopHomeMusic();
+      return;
+    }
+
+    const startHome = () => {
+      audioEngine.startHomeMusic();
+    };
+
+    // Attempt immediate start if audio context already unlocked, plus unlock on first gesture
+    startHome();
+    window.addEventListener('pointerdown', startHome);
+    window.addEventListener('keydown', startHome);
+    return () => {
+      window.removeEventListener('pointerdown', startHome);
+      window.removeEventListener('keydown', startHome);
+    };
+  }, [isHomeScreen]);
+
   const handleToggleMute = () => {
     audioEngine.init();
     const next = !muted;
     setMuted(next);
     audioEngine.setMuted(next);
+    if (!next && isHomeScreen) {
+      audioEngine.startHomeMusic();
+    }
   };
 
   const handleStartSolo = () => {
     audioEngine.init();
-    audioEngine.stopVictoryMusic();
+    audioEngine.stopHomeMusic();
+    audioEngine.startGameplayMusic();
     aiGuideRef.current.reset();
     if (engineRef.current) {
       engineRef.current.dispose();
@@ -252,7 +306,8 @@ export default function App() {
   const handleRestart = () => {
     if (!snapshot) return;
     audioEngine.init();
-    audioEngine.stopVictoryMusic();
+    audioEngine.stopHomeMusic();
+    audioEngine.startGameplayMusic();
     if (snapshot.mode === 'solo') {
       handleStartSolo();
     } else {
@@ -269,7 +324,9 @@ export default function App() {
   };
 
   const handleReturnTitle = () => {
+    audioEngine.stopGameplayMusic();
     audioEngine.stopVictoryMusic();
+    audioEngine.startHomeMusic();
     if (engineRef.current) {
       engineRef.current.dispose();
       engineRef.current = null;

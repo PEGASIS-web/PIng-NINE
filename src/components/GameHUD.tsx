@@ -39,22 +39,36 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   const latestRadio = radioMessages[radioMessages.length - 1];
   const glitchLevel = snapshot.restored ? 0 : Math.min(0.6, Math.max(0, uiState.bufferProximity));
   const glitchPercent = Math.round(glitchLevel * 100);
+  const pixelBlur = snapshot.restored ? 0 : Math.min(1, Math.max(0, uiState.pixelBlurIntensity));
+  const stuckSec = uiState.cloudStuckSeconds;
 
   return (
     <div className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between p-4 sm:p-5 select-none">
       {/* Progressive Buffer Glitch Overlay: 10% approaching -> 60% max close-up (keeps center readable) */}
-      {glitchLevel >= 0.08 && (
+      {(glitchLevel >= 0.08 || pixelBlur > 0.01) && (
         <div className="fixed inset-0 pointer-events-none overflow-hidden">
           {/* Outer vignette + chromatic aberration keeping center 40%+ clear at max 60% glitch */}
           <div
             className="absolute inset-0 transition-opacity duration-100"
             style={{
-              opacity: glitchLevel,
+              opacity: Math.max(glitchLevel, pixelBlur * 0.78),
               background:
                 'radial-gradient(circle at 50% 50%, rgba(12,6,20,0.04) 24%, rgba(255,45,85,0.28) 68%, rgba(10,4,18,0.82) 100%)',
-              boxShadow: `inset 0 0 ${Math.round(35 + glitchLevel * 150)}px rgba(255, 45, 85, 0.72)`,
+              boxShadow: `inset 0 0 ${Math.round(35 + Math.max(glitchLevel, pixelBlur) * 150)}px rgba(255, 45, 85, 0.72)`,
             }}
           />
+          {/* Progressive pixel-mosaic grid once stuck > 5s */}
+          {pixelBlur > 0.01 && (
+            <div
+              className="absolute inset-0"
+              style={{
+                opacity: Math.min(0.75, pixelBlur * 0.8),
+                backgroundImage:
+                  'linear-gradient(to right, rgba(16,12,28,0.45) 2px, transparent 2px), linear-gradient(to bottom, rgba(16,12,28,0.45) 2px, transparent 2px)',
+                backgroundSize: `${Math.round(6 + pixelBlur * 18)}px ${Math.round(6 + pixelBlur * 18)}px`,
+              }}
+            />
+          )}
           {/* Digital scanlines */}
           <div
             className="absolute inset-0 buffer-scanlines"
@@ -75,9 +89,13 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               style={{ opacity: Math.min(0.6, (glitchLevel - 0.25) * 1.2) }}
             />
           )}
-          {/* Interference readout */}
-          <div className="absolute top-20 left-1/2 -translate-x-1/2 px-3.5 py-1 rounded-lg bg-rose-950/90 border border-rose-400/60 text-xs font-mono-tabular text-rose-200">
-            BUFFER GLITCH {glitchPercent}% · REACH A SIGNAL STATION [E]
+          {/* Interference & Cloud-Stuck Pixelation Readout */}
+          <div className="absolute top-20 left-1/2 -translate-x-1/2 px-3.5 py-1 rounded-lg bg-rose-950/90 border border-rose-400/60 text-xs font-mono-tabular text-rose-200 whitespace-nowrap">
+            {pixelBlur > 0.01
+              ? `CLOUD OVERLOAD · PIXEL/BLUR ${Math.round(pixelBlur * 100)}% · ESCAPE OR HIT STATION [E]`
+              : stuckSec >= 1.5
+                ? `BUFFER GLITCH ${glitchPercent}% · EXPOSURE ${stuckSec.toFixed(1)}s / 5.0s · MOVE AWAY!`
+                : `BUFFER GLITCH ${glitchPercent}% · REACH A SIGNAL STATION [E]`}
           </div>
         </div>
       )}

@@ -43,6 +43,8 @@ export interface EngineUIState {
   activeEchoSpirit: SpiritDefinition | null;
   bufferProximity: number; // 0..1
   inCorruption: boolean;
+  cloudStuckSeconds: number;
+  pixelBlurIntensity: number; // 0..1 once stuck > 5s
 }
 
 export interface EngineCallbacks {
@@ -119,6 +121,9 @@ export class PingNineEngine {
   private lastUiSyncMs = 0;
   private cinematicTimer = 0;
   private currentPrompt: InteractPrompt | null = null;
+  private cloudStuckSeconds = 0;
+  private pixelBlurIntensity = 0;
+  private lastAppliedPixelScale = 1;
 
   constructor(
     container: HTMLElement,
@@ -194,6 +199,10 @@ export class PingNineEngine {
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
+    audioEngine.init();
+    if (!this.snapshot.restored && this.snapshot.phase === 'playing') {
+      audioEngine.startGameplayMusic();
+    }
     if (e.code === 'Escape') {
       if (document.pointerLockElement === this.renderer.domElement) {
         document.exitPointerLock();
@@ -219,6 +228,9 @@ export class PingNineEngine {
 
   private onPointerDown = (e: PointerEvent) => {
     audioEngine.init();
+    if (!this.snapshot.restored && this.snapshot.phase === 'playing') {
+      audioEngine.startGameplayMusic();
+    }
     if (this.paused || this.role !== 'runner' || this.snapshot.phase !== 'playing') return;
     if (e.target === this.renderer.domElement) {
       this.isDraggingLook = true;
@@ -259,7 +271,9 @@ export class PingNineEngine {
     const h = this.container.clientHeight || window.innerHeight;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h);
+    const baseRatio = this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2);
+    this.renderer.setPixelRatio(baseRatio * this.lastAppliedPixelScale);
+    this.renderer.setSize(w, h, false);
   };
 
   private bindInputs(): void {
@@ -275,6 +289,7 @@ export class PingNineEngine {
     this.paused = p;
     this.keys = {};
     this.isDraggingLook = false;
+    audioEngine.setMusicPaused(p);
   }
 
   public applyServerSnapshot(next: GameSnapshot): void {
@@ -1184,6 +1199,41 @@ export class PingNineEngine {
       this.camera.lookAt(_camLook);
     }
 
+    // Cloud Stuck Exposure (> 5s -> progressive screen pixelation + blur)
+    const dBuffer = Math.hypot(m.x - snap.buffer.x, m.z - snap.buffer.z);
+    const isStuckToCloud =
+      !snap.restored &&
+      snap.phase === 'playing' &&
+      !this.paused &&
+      !bufScared &&
+      (dBuffer <= 5.8 || snap.buffer.intensity >= 0.45);
+    if (isStuckToCloud) {
+      this.cloudStuckSeconds += dt;
+    } else {
+      this.cloudStuckSeconds = Math.max(0, this.cloudStuckSeconds - dt * 2.5);
+    }
+
+    if (this.cloudStuckSeconds > 5.0 && !snap.restored) {
+      const overtime = this.cloudStuckSeconds - 5.0;
+      this.pixelBlurIntensity = Math.min(1, overtime / 7.5);
+    } else {
+      this.pixelBlurIntensity = 0;
+    }
+
+    const desiredPixelScale =
+      this.pixelBlurIntensity > 0.01 ? Math.max(0.08, 1 - this.pixelBlurIntensity * 0.89) : 1;
+    if (Math.abs(desiredPixelScale - this.lastAppliedPixelScale) > 0.035 || (desiredPixelScale === 1 && this.lastAppliedPixelScale !== 1)) {
+      this.lastAppliedPixelScale = desiredPixelScale;
+      const w = this.container.clientWidth || window.innerWidth;
+      const h = this.container.clientHeight || window.innerHeight;
+      const baseRatio = this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2);
+      this.renderer.setPixelRatio(baseRatio * desiredPixelScale);
+      this.renderer.setSize(w, h, false);
+    }
+    this.renderer.domElement.style.imageRendering = this.pixelBlurIntensity > 0.01 ? 'pixelated' : 'auto';
+    this.renderer.domElement.style.filter =
+      this.pixelBlurIntensity > 0.01 ? `blur(${(this.pixelBlurIntensity * 9.0).toFixed(2)}px)` : 'none';
+
     // Audio ambience update
     audioEngine.updateAmbience({
       inBuilding: m.inBuilding,
@@ -1206,6 +1256,8 @@ export class PingNineEngine {
         activeEchoSpirit: null,
         bufferProximity: snap.restored ? 0 : snap.buffer.intensity,
         inCorruption,
+        cloudStuckSeconds: this.cloudStuckSeconds,
+        pixelBlurIntensity: this.pixelBlurIntensity,
       });
       if (this.snapshot.mode === 'solo') {
         this.callbacks.onSnapshot(structuredClone(this.snapshot));
@@ -1260,6 +1312,7 @@ export class PingNineEngine {
 
   public dispose(): void {
     this.disposed = true;
+    audioEngine.stopGameplayMusic();
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
     window.removeEventListener('keydown', this.onKeyDown);
